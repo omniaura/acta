@@ -1,12 +1,32 @@
 use anyhow::Result;
 use tracing::info;
+use crate::config::{Config, PluginConfig};
+use std::collections::HashMap;
 
 pub async fn list() -> Result<()> {
     info!("Listing plugins");
 
+    let config = Config::load()?;
+
     println!("Available Plugins:");
-    println!("==================");
-    println!("\n💡 This is a stub implementation. Full functionality coming soon!");
+    println!("==================\n");
+
+    if config.plugins.is_empty() {
+        println!("No plugins registered");
+        return Ok(());
+    }
+
+    for (name, plugin) in &config.plugins {
+        println!("  {}", name);
+        println!("    Command: {}", plugin.command);
+        if !plugin.args.is_empty() {
+            println!("    Args: {}", plugin.args.join(" "));
+        }
+        if !plugin.env.is_empty() {
+            println!("    Env vars: {}", plugin.env.len());
+        }
+        println!();
+    }
 
     Ok(())
 }
@@ -14,8 +34,19 @@ pub async fn list() -> Result<()> {
 pub async fn register(name: String, command: String) -> Result<()> {
     info!("Registering plugin '{}' with command '{}'", name, command);
 
+    let mut config = Config::load()?;
+
+    let plugin = PluginConfig {
+        command: command.clone(),
+        args: vec![],
+        env: HashMap::new(),
+    };
+
+    config.register_plugin(name.clone(), plugin);
+    config.save()?;
+
     println!("✅ Registered plugin '{}' -> '{}'", name, command);
-    println!("\n💡 This is a stub implementation. Full functionality coming soon!");
+    println!("   Edit ~/.config/acta/config.yaml to add args or env vars");
 
     Ok(())
 }
@@ -23,8 +54,14 @@ pub async fn register(name: String, command: String) -> Result<()> {
 pub async fn remove(name: String) -> Result<()> {
     info!("Removing plugin '{}'", name);
 
-    println!("🗑️  Removed plugin '{}'", name);
-    println!("\n💡 This is a stub implementation. Full functionality coming soon!");
+    let mut config = Config::load()?;
+
+    if config.remove_plugin(&name).is_some() {
+        config.save()?;
+        println!("🗑️  Removed plugin '{}'", name);
+    } else {
+        println!("⚠️  Plugin '{}' not found", name);
+    }
 
     Ok(())
 }

@@ -36,6 +36,9 @@ enum Commands {
     #[command(alias = "ls")]
     List,
 
+    /// Open interactive TUI
+    Tui,
+
     /// Attach to a session
     Attach {
         /// Session ID or name
@@ -118,6 +121,7 @@ impl Cli {
                 commands::new::execute(agent, name, args).await
             }
             Commands::List => commands::list::execute().await,
+            Commands::Tui => crate::tui::run().await,
             Commands::Attach { session } => commands::attach::execute(session).await,
             Commands::Detach => commands::detach::execute().await,
             Commands::Kill { session, force } => commands::kill::execute(session, force).await,
