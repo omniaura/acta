@@ -14,14 +14,14 @@ acta kill 2          # Terminate session #2
 
 Acta provides session isolation and orchestration for AI coding agents. Each "pane" runs a different agent (Claude Code, OpenCode, Cursor) in its own Git worktree, with ephemeral sessions that clean up after themselves.
 
-**Status:** 🚧 Early development (v0.1.0)
+**Status:** 🚧 MVP sprint in progress (v0.1.0)
 
 ## Features (Planned)
 
 - ✅ CLI framework with Clap
 - ✅ Async runtime with Tokio
-- ⏳ Git worktree isolation
-- ⏳ Session management
+- ✅ Git worktree isolation
+- ✅ Session management
 - ⏳ Plugin system for agents
 - ⏳ Ratatui TUI interface
 - ⏳ Configuration management
@@ -40,7 +40,7 @@ cargo install --path .
 ## Quick Start
 
 ```bash
-# Create a new Claude Code session
+# Create a new Claude Code session (creates isolated git worktree)
 acta new claude
 
 # Create a session with a custom name
@@ -49,7 +49,7 @@ acta new opencode --name my-feature
 # List active sessions
 acta list
 
-# Attach to a session
+# Attach to a session (launches configured plugin in that worktree)
 acta attach <session-id>
 
 # Kill a session
@@ -140,8 +140,8 @@ cargo build
 ### Phase 1: MVP (Current)
 - [x] Basic CLI structure
 - [x] Command parsing
-- [ ] Session state management
-- [ ] Git worktree operations
+- [x] Session state management
+- [x] Git worktree operations
 - [ ] Basic TUI
 
 ### Phase 2: Core Features

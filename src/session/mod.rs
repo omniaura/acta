@@ -12,6 +12,10 @@ pub struct Session {
     pub name: Option<String>,
     pub agent: String,
     pub worktree_path: PathBuf,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub repo_root: PathBuf,
     pub status: SessionStatus,
     pub created_at: SystemTime,
     pub args: Vec<String>,
@@ -60,7 +64,8 @@ impl SessionManager {
             let entry = entry?;
             let path = entry.path();
 
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+            let ext = path.extension().and_then(|s| s.to_str());
+            if ext == Some("json") || ext == Some("yaml") || ext == Some("yml") {
                 if let Ok(session) = Self::load_session(&path) {
                     sessions.insert(session.id.clone(), session);
                 }
@@ -77,7 +82,7 @@ impl SessionManager {
     }
 
     fn save_session(&self, session: &Session) -> Result<()> {
-        let path = self.state_dir.join(format!("{}.json", session.id));
+        let path = self.state_dir.join(format!("{}.yaml", session.id));
         let contents = serde_yaml::to_string(session)?;
         fs::write(path, contents)?;
         Ok(())
@@ -88,15 +93,19 @@ impl SessionManager {
         agent: String,
         name: Option<String>,
         args: Vec<String>,
+        worktree_path: PathBuf,
+        branch: String,
+        repo_root: PathBuf,
     ) -> Result<Session> {
         let id = Uuid::new_v4().to_string();
-        let worktree_path = PathBuf::from(format!(".acta/sessions/{}", id));
 
         let session = Session {
             id: id.clone(),
             name,
             agent,
             worktree_path,
+            branch,
+            repo_root,
             status: SessionStatus::Running,
             created_at: SystemTime::now(),
             args,
@@ -134,12 +143,30 @@ impl SessionManager {
 
         self.sessions.remove(&id);
 
-        let path = self.state_dir.join(format!("{}.json", id));
-        if path.exists() {
-            fs::remove_file(path)?;
+        let yaml = self.state_dir.join(format!("{}.yaml", id));
+        if yaml.exists() {
+            fs::remove_file(yaml)?;
+        }
+
+        let json = self.state_dir.join(format!("{}.json", id));
+        if json.exists() {
+            fs::remove_file(json)?;
         }
 
         Ok(())
+    }
+
+    pub fn next_session_id() -> String {
+        Uuid::new_v4().to_string()
+    }
+
+    pub fn register_session(&mut self, session: Session) -> Result<()> {
+        self.sessions.insert(session.id.clone(), session.clone());
+        self.save_session(&session)
+    }
+
+    pub fn find_session(&self, id_or_name: &str) -> Option<Session> {
+        self.get_session(id_or_name).cloned()
     }
 
     pub fn update_status(&mut self, id: &str, status: SessionStatus) -> Result<()> {

@@ -4,8 +4,8 @@ use tracing::info;
 pub async fn execute() -> Result<()> {
     info!("Detaching from current session");
 
-    println!("📤 Detaching from current session...");
-    println!("\n💡 This is a stub implementation. Full functionality coming soon!");
+    println!("📤 Detach is handled by your terminal multiplexer/session manager.");
+    println!("   If you launched with 'acta attach', press Ctrl+C to return to Acta.");
 
     Ok(())
 }
