@@ -1,5 +1,6 @@
 use anyhow::Result;
 use tracing::info;
+
 use crate::session::SessionManager;
 
 pub async fn execute() -> Result<()> {
@@ -9,29 +10,46 @@ pub async fn execute() -> Result<()> {
     let sessions = manager.list_sessions();
 
     if sessions.is_empty() {
-        println!("No active sessions");
-        println!("\n💡 Create a new session with: acta new <agent>");
+        println!("No sessions");
+        println!("\n  Create one with: acta new <agent>");
         return Ok(());
     }
 
-    println!("Active Sessions:");
-    println!("================\n");
-    println!("{:<8} {:<15} {:<10} {:<10}", "ID", "Agent", "Status", "Name");
-    println!("{}", "-".repeat(60));
+    println!(
+        "{:<16} {:<12} {:<10} {:<10} {}",
+        "ID", "Agent", "Status", "PID", "Worktree"
+    );
+    println!("{}", "\u{2500}".repeat(70));
 
-    for session in sessions {
-        let short_id = &session.id[..8];
-        let name = session.name.as_deref().unwrap_or("-");
+    for session in &sessions {
+        let status = session.effective_status();
+        let pid_str = session
+            .pid
+            .filter(|_| session.is_alive())
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "-".to_string());
+
+        let worktree = session
+            .worktree_path
+            .strip_prefix(&session.repo_path)
+            .unwrap_or(&session.worktree_path)
+            .display()
+            .to_string();
+
         println!(
-            "{:<8} {:<15} {:<10} {:<10}",
-            short_id,
-            session.agent,
-            format!("{:?}", session.status),
-            name
+            "{:<16} {:<12} {:<10} {:<10} {}",
+            session.id, session.agent, status, pid_str, worktree
         );
     }
 
-    println!("\n💡 Use 'acta attach <id>' to connect to a session");
+    let running = sessions.iter().filter(|s| s.is_alive()).count();
+
+    println!(
+        "\n  {} session(s), {} running",
+        sessions.len(),
+        running
+    );
+    println!("  Attach: acta attach <id>");
 
     Ok(())
 }

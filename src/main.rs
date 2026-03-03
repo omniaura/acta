@@ -1,5 +1,7 @@
 mod cli;
+mod client;
 mod config;
+mod daemon;
 mod git;
 mod session;
 mod tui;
@@ -10,7 +12,6 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing/logging
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -19,9 +20,6 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Parse CLI arguments
     let cli = cli::Cli::parse();
-
-    // Execute command
     cli.execute().await
 }

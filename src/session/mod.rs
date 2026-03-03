@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -12,16 +10,65 @@ pub struct Session {
     pub name: Option<String>,
     pub agent: String,
     pub worktree_path: PathBuf,
+    pub repo_path: PathBuf,
     pub status: SessionStatus,
-    pub created_at: SystemTime,
+    pub pid: Option<u32>,
+    pub created_at: u64,
     pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SessionStatus {
+    Starting,
     Running,
     Stopped,
     Failed,
+}
+
+impl std::fmt::Display for SessionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionStatus::Starting => write!(f, "Starting"),
+            SessionStatus::Running => write!(f, "Running"),
+            SessionStatus::Stopped => write!(f, "Stopped"),
+            SessionStatus::Failed => write!(f, "Failed"),
+        }
+    }
+}
+
+impl Session {
+    pub fn is_alive(&self) -> bool {
+        if let Some(pid) = self.pid {
+            unsafe { libc::kill(pid as i32, 0) == 0 }
+        } else {
+            false
+        }
+    }
+
+    pub fn socket_path(&self) -> PathBuf {
+        SessionManager::get_state_dir()
+            .unwrap()
+            .join(format!("{}.sock", self.id))
+    }
+
+    pub fn log_path(&self) -> PathBuf {
+        SessionManager::get_state_dir()
+            .unwrap()
+            .join(format!("{}.log", self.id))
+    }
+
+    pub fn effective_status(&self) -> SessionStatus {
+        match self.status {
+            SessionStatus::Running | SessionStatus::Starting => {
+                if self.is_alive() {
+                    self.status.clone()
+                } else {
+                    SessionStatus::Stopped
+                }
+            }
+            _ => self.status.clone(),
+        }
+    }
 }
 
 pub struct SessionManager {
@@ -32,8 +79,7 @@ pub struct SessionManager {
 impl SessionManager {
     pub fn new() -> Result<Self> {
         let state_dir = Self::get_state_dir()?;
-        fs::create_dir_all(&state_dir)
-            .context("Failed to create state directory")?;
+        fs::create_dir_all(&state_dir).context("Failed to create state directory")?;
 
         let sessions = Self::load_sessions(&state_dir)?;
 
@@ -43,9 +89,8 @@ impl SessionManager {
         })
     }
 
-    fn get_state_dir() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .context("Could not determine home directory")?;
+    pub fn get_state_dir() -> Result<PathBuf> {
+        let home = dirs::home_dir().context("Could not determine home directory")?;
         Ok(home.join(".acta").join("sessions"))
     }
 
@@ -72,33 +117,44 @@ impl SessionManager {
 
     fn load_session(path: &Path) -> Result<Session> {
         let contents = fs::read_to_string(path)?;
-        let session: Session = serde_yaml::from_str(&contents)?;
+        let session: Session = serde_json::from_str(&contents)?;
         Ok(session)
     }
 
     fn save_session(&self, session: &Session) -> Result<()> {
         let path = self.state_dir.join(format!("{}.json", session.id));
-        let contents = serde_yaml::to_string(session)?;
+        let contents = serde_json::to_string_pretty(session)?;
         fs::write(path, contents)?;
         Ok(())
     }
 
     pub fn create_session(
         &mut self,
+        id: String,
         agent: String,
         name: Option<String>,
+        worktree_path: PathBuf,
+        repo_path: PathBuf,
         args: Vec<String>,
     ) -> Result<Session> {
-        let id = Uuid::new_v4().to_string();
-        let worktree_path = PathBuf::from(format!(".acta/sessions/{}", id));
+        if self.sessions.contains_key(&id) {
+            anyhow::bail!("Session '{}' already exists", id);
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         let session = Session {
             id: id.clone(),
             name,
             agent,
             worktree_path,
-            status: SessionStatus::Running,
-            created_at: SystemTime::now(),
+            repo_path,
+            status: SessionStatus::Starting,
+            pid: None,
+            created_at: now,
             args,
         };
 
@@ -109,15 +165,13 @@ impl SessionManager {
     }
 
     pub fn get_session(&self, id_or_name: &str) -> Option<&Session> {
-        // Try by ID first
         if let Some(session) = self.sessions.get(id_or_name) {
             return Some(session);
         }
 
-        // Try by name
-        self.sessions.values().find(|s| {
-            s.name.as_ref().map(|n| n == id_or_name).unwrap_or(false)
-        })
+        self.sessions
+            .values()
+            .find(|s| s.name.as_ref().map(|n| n == id_or_name).unwrap_or(false))
     }
 
     pub fn list_sessions(&self) -> Vec<&Session> {
@@ -126,34 +180,30 @@ impl SessionManager {
         sessions
     }
 
-    pub fn kill_session(&mut self, id_or_name: &str) -> Result<()> {
-        let session = self
-            .get_session(id_or_name)
-            .context("Session not found")?;
-        let id = session.id.clone();
+    pub fn remove_session(&mut self, id: &str) -> Result<()> {
+        self.sessions.remove(id);
 
-        self.sessions.remove(&id);
+        let json_path = self.state_dir.join(format!("{}.json", id));
+        if json_path.exists() {
+            fs::remove_file(json_path)?;
+        }
 
-        let path = self.state_dir.join(format!("{}.json", id));
-        if path.exists() {
-            fs::remove_file(path)?;
+        let sock_path = self.state_dir.join(format!("{}.sock", id));
+        if sock_path.exists() {
+            fs::remove_file(sock_path)?;
+        }
+
+        let log_path = self.state_dir.join(format!("{}.log", id));
+        if log_path.exists() {
+            fs::remove_file(log_path)?;
         }
 
         Ok(())
     }
 
-    pub fn update_status(&mut self, id: &str, status: SessionStatus) -> Result<()> {
-        let session = self
-            .sessions
-            .get_mut(id)
-            .context("Session not found")?;
-
-        session.status = status.clone();
-
-        // Clone the session to avoid borrow checker issues
-        let session_clone = session.clone();
-        self.save_session(&session_clone)?;
-
+    pub fn update_session(&mut self, session: Session) -> Result<()> {
+        self.sessions.insert(session.id.clone(), session.clone());
+        self.save_session(&session)?;
         Ok(())
     }
 }
@@ -162,4 +212,9 @@ impl Default for SessionManager {
     fn default() -> Self {
         Self::new().expect("Failed to create SessionManager")
     }
+}
+
+pub fn generate_session_id(agent: &str) -> String {
+    let short = &uuid::Uuid::new_v4().to_string()[..6];
+    format!("{}-{}", agent, short)
 }

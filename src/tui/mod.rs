@@ -12,6 +12,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
+
 use crate::session::SessionManager;
 
 pub struct App {
@@ -25,6 +26,12 @@ impl App {
             manager: SessionManager::new()?,
             selected: 0,
         })
+    }
+
+    fn refresh(&mut self) {
+        if let Ok(m) = SessionManager::new() {
+            self.manager = m;
+        }
     }
 
     fn select_next(&mut self) {
@@ -44,23 +51,23 @@ impl App {
             }
         }
     }
+
+    fn selected_session_id(&self) -> Option<String> {
+        let sessions = self.manager.list_sessions();
+        sessions.get(self.selected).map(|s| s.id.clone())
+    }
 }
 
 pub async fn run() -> Result<()> {
-    // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app
     let mut app = App::new()?;
-
-    // Run app
     let res = run_app(&mut terminal, &mut app).await;
 
-    // Restore terminal
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -76,17 +83,54 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+async fn run_app<B: Backend + io::Write>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     loop {
         terminal.draw(|f| ui(f, app))?;
 
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') => return Ok(()),
-                KeyCode::Down | KeyCode::Char('j') => app.select_next(),
-                KeyCode::Up | KeyCode::Char('k') => app.select_previous(),
-                _ => {}
+        if event::poll(std::time::Duration::from_secs(2))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Down | KeyCode::Char('j') => app.select_next(),
+                    KeyCode::Up | KeyCode::Char('k') => app.select_previous(),
+                    KeyCode::Char('r') => app.refresh(),
+                    KeyCode::Enter => {
+                        if let Some(id) = app.selected_session_id() {
+                            disable_raw_mode()?;
+                            execute!(
+                                terminal.backend_mut(),
+                                LeaveAlternateScreen,
+                                DisableMouseCapture
+                            )?;
+                            terminal.show_cursor()?;
+
+                            let sessions = app.manager.list_sessions();
+                            if let Some(sess) = sessions.iter().find(|s| s.id == id) {
+                                if sess.is_alive() {
+                                    let socket_path = sess.socket_path();
+                                    eprintln!(
+                                        "Attaching to '{}'... (Ctrl+B d to detach)\n",
+                                        id
+                                    );
+                                    let _ = crate::client::attach(&socket_path).await;
+                                    eprintln!("[detached from '{}']", id);
+                                }
+                            }
+
+                            enable_raw_mode()?;
+                            execute!(
+                                terminal.backend_mut(),
+                                EnterAlternateScreen,
+                                EnableMouseCapture
+                            )?;
+                            app.refresh();
+                        }
+                    }
+                    _ => {}
+                }
             }
+        } else {
+            app.refresh();
         }
     }
 }
@@ -94,7 +138,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
 fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
+        .margin(1)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
@@ -102,24 +146,37 @@ fn ui(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    // Header
-    let header = Paragraph::new("Acta - Agentic Terminal Multiplexer")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-        .block(Block::default().borders(Borders::ALL).title("Header"));
+    let header = Paragraph::new("Acta \u{2014} Agentic Terminal Multiplexer")
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::default().borders(Borders::ALL));
     f.render_widget(header, chunks[0]);
 
-    // Sessions list
     let sessions = app.manager.list_sessions();
     let items: Vec<ListItem> = sessions
         .iter()
         .enumerate()
         .map(|(i, session)| {
+            let status = session.effective_status();
+            let status_color = match status {
+                crate::session::SessionStatus::Running => Color::Green,
+                crate::session::SessionStatus::Starting => Color::Yellow,
+                crate::session::SessionStatus::Stopped => Color::Red,
+                crate::session::SessionStatus::Failed => Color::Red,
+            };
+
+            let pid_str = session
+                .pid
+                .filter(|_| session.is_alive())
+                .map(|p| format!("PID {}", p))
+                .unwrap_or_default();
+
             let content = format!(
-                "{} {} [{}] {}",
-                &session.id[..8],
-                session.agent,
-                format!("{:?}", session.status),
-                session.name.as_deref().unwrap_or("-")
+                " {} | {:<10} | {:<10} | {}",
+                session.id, session.agent, status, pid_str,
             );
 
             let style = if i == app.selected {
@@ -127,25 +184,23 @@ fn ui(f: &mut Frame, app: &App) {
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
+                Style::default().fg(status_color)
             };
 
             ListItem::new(content).style(style)
         })
         .collect();
 
-    let sessions_list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(format!(
-            "Sessions ({}/{})",
-            app.selected + 1,
-            sessions.len().max(1)
-        )));
-
+    let count = sessions.len();
+    let sessions_list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Sessions ({}) ", count)),
+    );
     f.render_widget(sessions_list, chunks[1]);
 
-    // Footer
-    let footer = Paragraph::new("q: quit | ↑/k: up | ↓/j: down | Enter: attach (not implemented)")
-        .style(Style::default().fg(Color::Gray))
-        .block(Block::default().borders(Borders::ALL).title("Help"));
+    let footer = Paragraph::new("q:quit  j/k:navigate  Enter:attach  r:refresh")
+        .style(Style::default().fg(Color::DarkGray))
+        .block(Block::default().borders(Borders::ALL).title(" Keys "));
     f.render_widget(footer, chunks[2]);
 }

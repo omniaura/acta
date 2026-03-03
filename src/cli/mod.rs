@@ -20,12 +20,16 @@ pub struct Cli {
 enum Commands {
     /// Create a new agent session
     New {
-        /// Agent type (claude, opencode, cursor)
+        /// Agent type (claude, opencode, cursor, or any command)
         agent: String,
 
-        /// Optional session name
+        /// Session name (auto-generated if not provided)
         #[arg(short, long)]
         name: Option<String>,
+
+        /// Create session without attaching
+        #[arg(short, long)]
+        detach: bool,
 
         /// Additional arguments to pass to the agent
         #[arg(last = true)]
@@ -45,7 +49,7 @@ enum Commands {
         session: String,
     },
 
-    /// Detach from current session
+    /// Detach from current session (Ctrl+B d)
     Detach,
 
     /// Kill a session
@@ -53,9 +57,9 @@ enum Commands {
         /// Session ID or name
         session: String,
 
-        /// Force kill without cleanup
-        #[arg(short, long)]
-        force: bool,
+        /// Also remove the git worktree
+        #[arg(long)]
+        clean: bool,
     },
 
     /// Manage configuration
@@ -68,6 +72,14 @@ enum Commands {
     Plugin {
         #[command(subcommand)]
         command: PluginCommands,
+    },
+
+    /// Internal: Run session daemon (hidden)
+    #[command(hide = true)]
+    Daemon {
+        /// Session ID
+        #[arg(long)]
+        session_id: String,
     },
 }
 
@@ -117,14 +129,17 @@ enum PluginCommands {
 impl Cli {
     pub async fn execute(self) -> Result<()> {
         match self.command {
-            Commands::New { agent, name, args } => {
-                commands::new::execute(agent, name, args).await
-            }
+            Commands::New {
+                agent,
+                name,
+                detach,
+                args,
+            } => commands::new::execute(agent, name, detach, args).await,
             Commands::List => commands::list::execute().await,
             Commands::Tui => crate::tui::run().await,
             Commands::Attach { session } => commands::attach::execute(session).await,
             Commands::Detach => commands::detach::execute().await,
-            Commands::Kill { session, force } => commands::kill::execute(session, force).await,
+            Commands::Kill { session, clean } => commands::kill::execute(session, clean).await,
             Commands::Config { command } => match command {
                 ConfigCommands::List => commands::config::list().await,
                 ConfigCommands::Get { key } => commands::config::get(key).await,
@@ -138,6 +153,7 @@ impl Cli {
                 }
                 PluginCommands::Remove { name } => commands::plugin::remove(name).await,
             },
+            Commands::Daemon { session_id } => crate::daemon::run(session_id).await,
         }
     }
 }
