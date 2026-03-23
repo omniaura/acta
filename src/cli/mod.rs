@@ -69,6 +69,13 @@ enum Commands {
         #[command(subcommand)]
         command: PluginCommands,
     },
+
+    /// Manage the Acta clipboard queue
+    #[command(visible_alias = "cb")]
+    Clipboard {
+        #[command(subcommand)]
+        command: ClipboardCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -114,6 +121,28 @@ enum PluginCommands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum ClipboardCommands {
+    /// Enqueue a plaintext snippet
+    Push {
+        /// Snippet text. Use --stdin to preserve raw multiline content.
+        text: Option<String>,
+
+        /// Read the snippet directly from stdin
+        #[arg(long)]
+        stdin: bool,
+    },
+
+    /// Copy and dequeue the head snippet
+    Next,
+
+    /// Show daemon and queue status
+    Status,
+
+    /// Run the persistent clipboard daemon
+    Daemon,
+}
+
 impl Cli {
     pub async fn execute(self) -> Result<()> {
         match self.command {
@@ -137,6 +166,14 @@ impl Cli {
                     commands::plugin::register(name, command).await
                 }
                 PluginCommands::Remove { name } => commands::plugin::remove(name).await,
+            },
+            Commands::Clipboard { command } => match command {
+                ClipboardCommands::Push { text, stdin } => {
+                    commands::clipboard::push(text, stdin).await
+                }
+                ClipboardCommands::Next => commands::clipboard::next().await,
+                ClipboardCommands::Status => commands::clipboard::status().await,
+                ClipboardCommands::Daemon => commands::clipboard::daemon().await,
             },
         }
     }

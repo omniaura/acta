@@ -1,4 +1,6 @@
 mod cli;
+mod clipboard;
+mod cb;
 mod config;
 mod git;
 mod session;

@@ -9,31 +9,35 @@ repository = "https://github.com/omniaura/acta"
 
 [dependencies]
 # CLI framework
-clap = { version = "4.5", features = ["derive", "cargo"] }
+clap = { version = "=4.5.51", features = ["derive", "cargo"] }
+
+# Clipboard + IPC
+arboard = { version = "=3.4.1", default-features = false }
+instability = "=0.3.1"
 
 # TUI framework
-ratatui = "0.28"
-crossterm = "0.28"
+ratatui = { version = "=0.28.0", default-features = false, features = ["crossterm"] }
+crossterm = "=0.28.1"
 
 # Async runtime
-tokio = { version = "1.41", features = ["full"] }
+tokio = { version = "=1.41.1", features = ["full"] }
 
 # Configuration
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9"
-toml = "0.8"
+serde = { version = "=1.0.214", features = ["derive"] }
+serde_json = "=1.0.132"
+serde_yaml = "=0.9.34"
 
 # Error handling
-anyhow = "1.0"
-thiserror = "2.0"
+anyhow = "=1.0.93"
+thiserror = "=2.0.3"
 
 # Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = "=0.1.40"
+tracing-subscriber = { version = "=0.3.18", features = ["env-filter"] }
 
 # Git operations
 # git2 = "0.19"  # Temporarily disabled - requires OpenSSL dev libs
 
 # Utilities
-dirs = "6.0"
-uuid = { version = "1.11", features = ["v4", "serde"] }
+dirs = "=6.0.0"
+uuid = { version = "=1.11.0", features = ["v4", "serde"] }
