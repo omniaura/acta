@@ -1,7 +1,7 @@
-use anyhow::Result;
-use tracing::info;
 use crate::config::{Config, PluginConfig};
+use anyhow::Result;
 use std::collections::HashMap;
+use tracing::info;
 
 pub async fn list() -> Result<()> {
     info!("Listing plugins");

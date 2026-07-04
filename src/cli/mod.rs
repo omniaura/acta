@@ -1,12 +1,16 @@
 mod commands;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
-/// Acta - A terminal multiplexer for agentic coding
+/// Acta — a terminal multiplexer for agentic coding.
+///
+/// Detachable agent sessions (exit, SSH away, the agent keeps working),
+/// a FIFO clipboard queue for agent-to-human handoff, and multi-repo
+/// workspaces backed by plain clones instead of git worktrees.
 #[derive(Parser, Debug)]
 #[command(name = "acta")]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about)]
 pub struct Cli {
     /// Enable verbose logging
     #[arg(short, long, global = true)]
@@ -18,45 +22,85 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Create a new agent session
+    /// Create a new detached agent session
     New {
-        /// Agent type (claude, opencode, cursor)
+        /// Agent to run: a configured plugin (claude, opencode, codex, …)
+        /// or any raw command
         agent: String,
 
-        /// Optional session name
+        /// Session name (defaults to <agent>-<id>)
         #[arg(short, long)]
         name: Option<String>,
 
-        /// Additional arguments to pass to the agent
+        /// Working directory for the agent (defaults to the current dir)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Run inside a workspace clone (looks up clones/<repo> via acta.yaml)
+        #[arg(short, long)]
+        repo: Option<String>,
+
+        /// Attach to the session immediately after starting it
+        #[arg(short, long)]
+        attach: bool,
+
+        /// Additional arguments passed to the agent
         #[arg(last = true)]
         args: Vec<String>,
     },
 
-    /// List active sessions
+    /// List sessions
     #[command(alias = "ls")]
     List,
 
-    /// Open interactive TUI
-    Tui,
-
-    /// Attach to a session
+    /// Attach to a running session (detach with Ctrl-\)
     Attach {
         /// Session ID or name
         session: String,
     },
 
-    /// Detach from current session
+    /// How to detach (must be done from inside an attached session)
     Detach,
 
-    /// Kill a session
+    /// Terminate a session's agent
     Kill {
         /// Session ID or name
         session: String,
 
-        /// Force kill without cleanup
+        /// SIGKILL the agent and its daemon instead of SIGTERM
         #[arg(short, long)]
         force: bool,
     },
+
+    /// Print a session's terminal output log
+    Logs {
+        /// Session ID or name
+        session: String,
+
+        /// Only print the last N lines
+        #[arg(short = 'n', long)]
+        tail: Option<usize>,
+    },
+
+    /// Remove records of exited/failed sessions
+    Clean,
+
+    /// Agent-to-human clipboard queue (alias: cb)
+    #[command(visible_alias = "cb")]
+    Clipboard {
+        #[command(subcommand)]
+        command: commands::clipboard::ClipboardCommands,
+    },
+
+    /// Multi-repo workspace: virtual worktrees via plain clones (alias: ws)
+    #[command(visible_alias = "ws")]
+    Workspace {
+        #[command(subcommand)]
+        command: commands::workspace::WorkspaceCommands,
+    },
+
+    /// Open the interactive session picker TUI
+    Tui,
 
     /// Manage configuration
     Config {
@@ -64,10 +108,23 @@ enum Commands {
         command: ConfigCommands,
     },
 
-    /// Manage plugins
+    /// Manage agent plugins
     Plugin {
         #[command(subcommand)]
         command: PluginCommands,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate for
+        shell: clap_complete::Shell,
+    },
+
+    /// Internal: session daemon entry point
+    #[command(name = "__sessiond", hide = true)]
+    Sessiond {
+        /// Session id
+        id: u32,
     },
 }
 
@@ -114,17 +171,31 @@ enum PluginCommands {
     },
 }
 
+/// Attach to a session by id — used by the TUI after it restores the terminal.
+pub async fn attach_session(id: u32) -> Result<()> {
+    commands::attach::execute(id.to_string()).await
+}
+
 impl Cli {
     pub async fn execute(self) -> Result<()> {
         match self.command {
-            Commands::New { agent, name, args } => {
-                commands::new::execute(agent, name, args).await
-            }
+            Commands::New {
+                agent,
+                name,
+                cwd,
+                repo,
+                attach,
+                args,
+            } => commands::new::execute(agent, name, cwd, repo, attach, args).await,
             Commands::List => commands::list::execute().await,
             Commands::Tui => crate::tui::run().await,
             Commands::Attach { session } => commands::attach::execute(session).await,
             Commands::Detach => commands::detach::execute().await,
             Commands::Kill { session, force } => commands::kill::execute(session, force).await,
+            Commands::Logs { session, tail } => commands::logs::execute(session, tail).await,
+            Commands::Clean => commands::clean::execute().await,
+            Commands::Clipboard { command } => commands::clipboard::execute(command).await,
+            Commands::Workspace { command } => commands::workspace::execute(command).await,
             Commands::Config { command } => match command {
                 ConfigCommands::List => commands::config::list().await,
                 ConfigCommands::Get { key } => commands::config::get(key).await,
@@ -138,6 +209,13 @@ impl Cli {
                 }
                 PluginCommands::Remove { name } => commands::plugin::remove(name).await,
             },
+            Commands::Completions { shell } => {
+                let mut cmd = Cli::command();
+                let name = cmd.get_name().to_string();
+                clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+                Ok(())
+            }
+            Commands::Sessiond { id } => crate::session::daemon::run(id).await,
         }
     }
 }

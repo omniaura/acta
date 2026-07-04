@@ -1,6 +1,9 @@
+//! Interactive session picker with vim motions (j/k/gg/G, Enter attaches).
+
+use crate::session::{Session, SessionManager};
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -12,79 +15,105 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
-use crate::session::SessionManager;
 
-pub struct App {
-    manager: SessionManager,
+struct App {
+    sessions: Vec<Session>,
     selected: usize,
+    pending_g: bool,
+}
+
+enum Action {
+    Quit,
+    Attach(u32),
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
+    fn new() -> Result<Self> {
+        let manager = SessionManager::new()?;
         Ok(Self {
-            manager: SessionManager::new()?,
+            sessions: manager.list()?,
             selected: 0,
+            pending_g: false,
         })
     }
 
+    fn refresh(&mut self) -> Result<()> {
+        let manager = SessionManager::new()?;
+        self.sessions = manager.list()?;
+        if !self.sessions.is_empty() {
+            self.selected = self.selected.min(self.sessions.len() - 1);
+        } else {
+            self.selected = 0;
+        }
+        Ok(())
+    }
+
     fn select_next(&mut self) {
-        let sessions = self.manager.list_sessions();
-        if !sessions.is_empty() {
-            self.selected = (self.selected + 1) % sessions.len();
+        if !self.sessions.is_empty() {
+            self.selected = (self.selected + 1) % self.sessions.len();
         }
     }
 
     fn select_previous(&mut self) {
-        let sessions = self.manager.list_sessions();
-        if !sessions.is_empty() {
-            if self.selected > 0 {
-                self.selected -= 1;
-            } else {
-                self.selected = sessions.len() - 1;
-            }
+        if !self.sessions.is_empty() {
+            self.selected = self
+                .selected
+                .checked_sub(1)
+                .unwrap_or(self.sessions.len() - 1);
         }
     }
 }
 
 pub async fn run() -> Result<()> {
-    // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app
     let mut app = App::new()?;
+    let action = run_app(&mut terminal, &mut app).await;
 
-    // Run app
-    let res = run_app(&mut terminal, &mut app).await;
-
-    // Restore terminal
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    if let Err(err) = res {
-        eprintln!("Error: {}", err);
+    match action? {
+        Action::Quit => Ok(()),
+        Action::Attach(id) => crate::cli::attach_session(id).await,
     }
-
-    Ok(())
 }
 
-async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<Action> {
     loop {
         terminal.draw(|f| ui(f, app))?;
 
         if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            let was_pending_g = app.pending_g;
+            app.pending_g = false;
             match key.code {
-                KeyCode::Char('q') => return Ok(()),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(Action::Quit),
                 KeyCode::Down | KeyCode::Char('j') => app.select_next(),
                 KeyCode::Up | KeyCode::Char('k') => app.select_previous(),
+                KeyCode::Char('g') => {
+                    if was_pending_g {
+                        app.selected = 0;
+                    } else {
+                        app.pending_g = true;
+                    }
+                }
+                KeyCode::Char('G') => {
+                    app.selected = app.sessions.len().saturating_sub(1);
+                }
+                KeyCode::Char('r') => app.refresh()?,
+                KeyCode::Enter => {
+                    if let Some(session) = app.sessions.get(app.selected) {
+                        return Ok(Action::Attach(session.id));
+                    }
+                }
                 _ => {}
             }
         }
@@ -94,7 +123,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
 fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
+        .margin(1)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
@@ -102,26 +131,28 @@ fn ui(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    // Header
-    let header = Paragraph::new("Acta - Agentic Terminal Multiplexer")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-        .block(Block::default().borders(Borders::ALL).title("Header"));
+    let header = Paragraph::new("Acta — sessions")
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::default().borders(Borders::ALL));
     f.render_widget(header, chunks[0]);
 
-    // Sessions list
-    let sessions = app.manager.list_sessions();
-    let items: Vec<ListItem> = sessions
+    let items: Vec<ListItem> = app
+        .sessions
         .iter()
         .enumerate()
         .map(|(i, session)| {
             let content = format!(
-                "{} {} [{}] {}",
-                &session.id[..8],
+                "{:<4} {:<20} {:<12} {:<12} {}",
+                session.id,
+                session.name,
                 session.agent,
-                format!("{:?}", session.status),
-                session.name.as_deref().unwrap_or("-")
+                session.status.label(),
+                session.cwd.display()
             );
-
             let style = if i == app.selected {
                 Style::default()
                     .fg(Color::Yellow)
@@ -129,23 +160,23 @@ fn ui(f: &mut Frame, app: &App) {
             } else {
                 Style::default()
             };
-
             ListItem::new(content).style(style)
         })
         .collect();
 
-    let sessions_list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(format!(
-            "Sessions ({}/{})",
-            app.selected + 1,
-            sessions.len().max(1)
-        )));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
+        "Sessions ({}/{})",
+        if app.sessions.is_empty() {
+            0
+        } else {
+            app.selected + 1
+        },
+        app.sessions.len()
+    )));
+    f.render_widget(list, chunks[1]);
 
-    f.render_widget(sessions_list, chunks[1]);
-
-    // Footer
-    let footer = Paragraph::new("q: quit | ↑/k: up | ↓/j: down | Enter: attach (not implemented)")
+    let footer = Paragraph::new("j/k move · gg/G top/bottom · Enter attach · r refresh · q quit")
         .style(Style::default().fg(Color::Gray))
-        .block(Block::default().borders(Borders::ALL).title("Help"));
+        .block(Block::default().borders(Borders::ALL));
     f.render_widget(footer, chunks[2]);
 }
