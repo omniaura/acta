@@ -1,11 +1,10 @@
 use anyhow::Result;
-use tracing::info;
 
 pub async fn execute() -> Result<()> {
-    info!("Detaching from current session");
-
-    println!("📤 Detaching from current session...");
-    println!("\n💡 This is a stub implementation. Full functionality coming soon!");
-
+    if let Ok(session) = std::env::var("ACTA_SESSION") {
+        println!("You are inside acta session {session}.");
+    }
+    println!("Detach from an attached session with Ctrl-\\ — the agent keeps running.");
+    println!("Re-attach any time with `acta attach <id>`, even from a new SSH login.");
     Ok(())
 }

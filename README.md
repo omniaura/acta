@@ -1,175 +1,208 @@
 # Acta
 
-**A terminal multiplexer for agentic coding** — like tmux, but for AI agents.
+**A terminal multiplexer for agentic coding** — like tmux, but built for AI agents.
 
 ```bash
-acta new claude      # Spin up Claude Code in new worktree
-acta new opencode    # Spin up OpenCode in parallel worktree
-acta ls              # List active sessions
-acta attach 3        # Attach to session #3
-acta kill 2          # Terminate session #2
+acta new claude            # Spin up Claude Code in a detached session
+acta ls                    # List sessions
+acta attach 1              # Attach (detach again with Ctrl-\)
+acta cb next               # Pop the next agent-pushed snippet onto your clipboard
+acta ws sync               # Clone/refresh every repo in your workspace
 ```
 
-## Overview
+Acta is three tools in one binary:
 
-Acta provides session isolation and orchestration for AI coding agents. Each "pane" runs a different agent (Claude Code, OpenCode, Cursor) in its own Git worktree, with ephemeral sessions that clean up after themselves.
+1. **Detachable sessions** — run any coding agent in a PTY owned by a
+   detached daemon. Close your terminal, drop your SSH connection, come back
+   later: the agent kept working. Re-attach from anywhere.
+2. **Acta Clipboard** (`acta clipboard` / `acta cb`) — a stateful FIFO queue
+   for agent-to-human handoff. Agents `push` commands and snippets; you
+   `next` through them straight onto your system clipboard. No more
+   multiline heredoc copy/paste hell.
+3. **Acta Workspaces** (`acta workspace` / `acta ws`) — manage many repos as
+   one workspace using plain clones in a gitignored `clones/` folder:
+   the parallel-worktree experience with zero worktree headaches.
 
-**Status:** 🚧 Early development (v0.1.0)
-
-## Features (Planned)
-
-- ✅ CLI framework with Clap
-- ✅ Async runtime with Tokio
-- ⏳ Git worktree isolation
-- ⏳ Session management
-- ⏳ Plugin system for agents
-- ⏳ Ratatui TUI interface
-- ⏳ Configuration management
+**Status:** v0.2.0 — the three pillars above are implemented and usable today.
 
 ## Installation
-
-### From Source
 
 ```bash
 git clone https://github.com/omniaura/acta
 cd acta
-cargo build --release
 cargo install --path .
+
+# Shell completions (bash/zsh/fish/elvish/powershell)
+acta completions zsh > "${fpath[1]}/_acta"
 ```
 
-## Quick Start
+Requires Rust 1.85+ and git. Linux and macOS.
+
+## Sessions
 
 ```bash
-# Create a new Claude Code session
+# Start an agent in a detached session (any configured plugin, or any raw command)
 acta new claude
+acta new opencode --name refactor -- --model some-model
+acta new bash --name scratch
 
-# Create a session with a custom name
-acta new opencode --name my-feature
-
-# List active sessions
-acta list
-
-# Attach to a session
-acta attach <session-id>
-
-# Kill a session
-acta kill <session-id>
+# Watch and manage
+acta ls                    # table of sessions with status/pid/age
+acta attach refactor       # by name or id; Ctrl-\ detaches
+acta logs refactor -n 50   # peek at output without attaching
+acta kill refactor         # SIGTERM the agent (add --force for SIGKILL)
+acta clean                 # drop records of exited sessions
+acta tui                   # interactive picker (j/k/gg/G, Enter attaches)
 ```
 
-## Commands
+How it works: `acta new` spawns a small daemon (`setsid`, no controlling
+terminal) that owns the agent's PTY, appends all output to
+`~/.acta/sessions/<id>.log`, and serves attach clients over a unix socket
+with a 256 KiB scrollback replay. Detaching, closing your terminal, or
+losing SSH never touches the agent.
 
-### Session Management
+Inside a session the agent sees `ACTA_SESSION` and `ACTA_SESSION_NAME`, so
+anything it pushes to the clipboard queue is attributed to it.
 
-- `acta new <agent>` — Create new agent session
-- `acta list` (`acta ls`) — List active sessions
-- `acta attach <session>` — Attach to a session
-- `acta detach` — Detach from current session
-- `acta kill <session>` — Terminate a session
+## Acta Clipboard (`acta cb`)
 
-### Configuration
+The agent-to-human handover queue. `acta clipboard` is canonical; `acta cb`
+is the alias — identical subcommands:
 
-- `acta config list` — Show configuration
-- `acta config get <key>` — Get config value
-- `acta config set <key> <value>` — Set config value
-- `acta config path` — Show config file location
+| Command | Alias | What it does |
+| :--- | :--- | :--- |
+| `acta clipboard push [content]` | `acta cb p` | Queue a snippet (or pipe via stdin). `--desc`, `--sensitive` |
+| `acta clipboard next` | `acta cb n` | Pop the head onto your system clipboard |
+| `acta clipboard list` | `acta cb ls` | Show the queue (sensitive content is masked) |
+| `acta clipboard peek` | | Show the head without popping |
+| `acta clipboard skip` | | Drop the head without copying |
+| `acta clipboard clear` | `acta cb cl` | Empty the queue; `--sensitive` also wipes the system clipboard |
 
-### Plugins
+The workflow that kills heredoc hell: an agent pushes five setup commands,
+then you just `Cmd+V`, `acta cb n`, `Cmd+V`, `acta cb n`, … until the queue
+is empty.
 
-- `acta plugin list` — List available plugins
-- `acta plugin register <name> <command>` — Register plugin
-- `acta plugin remove <name>` — Remove plugin
+Clipboard writes try `pbcopy`/`wl-copy`/`xclip`/`xsel` first, then fall back
+to an **OSC 52** escape — so `acta cb next` reaches your local clipboard
+even over a plain SSH connection (iTerm2, WezTerm, kitty, Ghostty, tmux, …).
+Headless? `acta cb next --stdout` prints instead.
 
-## Configuration
+## Acta Workspaces (`acta ws`)
 
-Configuration is stored in `~/.config/acta/config.yaml`:
+Working across many repos with submodules or worktrees is miserable. An
+Acta workspace is one orchestrator repo that holds your shared agent config
+and skills, plus an `acta.yaml` manifest. Every listed repo is cloned into a
+gitignored `clones/` directory — real, independent clones, so agents can
+work all of them concurrently with no worktree locking or branch juggling.
+
+```bash
+acta ws init my-stack                       # acta.yaml + gitignored clones/
+acta ws add git@github.com:me/api.git
+acta ws add git@github.com:me/web.git --branch develop
+acta ws sync                                # parallel clone/pull + links + setup
+acta ws status                              # branch / dirty / ahead-behind per clone
+acta ws run -- git fetch --all              # run a command in every clone
+acta new claude --repo api                  # launch an agent inside a clone
+```
+
+`acta.yaml`:
+
+```yaml
+workspace:
+  name: my-stack
+  clones_dir: clones
+  # Shared files symlinked into every clone (skills, agent config).
+  # They're auto-added to each clone's .git/info/exclude so they never
+  # show up as untracked noise.
+  links:
+    - CLAUDE.md
+    - .claude
+repos:
+  - name: api
+    url: git@github.com:me/api.git
+    setup:
+      - make deps
+  - name: web
+    url: git@github.com:me/web.git
+    branch: develop
+```
+
+### LLM context from the whole workspace
+
+```bash
+acta ws context --diff          # <acta-context clone="..."> blocks per repo
+acta ws context --diff --clip   # …copied to your clipboard + queued in acta cb
+```
+
+Emits status and diffs for every clone wrapped in semantic tags, ready to
+paste into any agent prompt:
+
+```
+<acta-context clone="api">
+# git status --short --branch
+## main...origin/main
+ M src/server.rs
+# git diff (staged + unstaged)
+…
+</acta-context>
+```
+
+## Agents & plugins
+
+`claude`, `opencode`, `cursor`, `codex`, `gemini`, and `aider` work out of
+the box; anything else runs as a raw command (`acta new ./my-agent.sh`).
+Register your own:
+
+```bash
+acta plugin register myagent "myagent-cli"
+acta plugin list
+```
+
+Configuration lives in `~/.config/acta/config.yaml`:
 
 ```yaml
 plugins:
   claude:
-    command: "claude"
+    command: claude
     args: []
     env:
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-
-  opencode:
-    command: "opencode"
-    args: ["--experimental"]
-    env: {}
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"   # ${VAR} expands at launch
 ```
+
+`ACTA_ENV` is surfaced in `acta ls`/`acta new` output and passed through to
+agents, so prompts and hooks can behave differently in `prod` vs `dev`.
 
 ## Architecture
 
-- **CLI** — Clap-based command parser
-- **Session** — Session lifecycle management
-- **Git** — Worktree isolation (planned)
-- **TUI** — Ratatui interface (planned)
-- **Config** — YAML configuration with Viper-like overlays
-
-## Development
-
-### Prerequisites
-
-- Rust 1.93+ (edition 2021)
-- Git 2.40+
-
-### Build
-
-```bash
-cargo build
-```
-
-### Test
-
-```bash
-./target/debug/acta --help
-./target/debug/acta new claude
-./target/debug/acta list
-```
-
-### Dependencies
-
-- **clap** — CLI framework
-- **ratatui** — TUI framework
-- **tokio** — Async runtime
-- **serde** — Configuration serialization
-- **anyhow/thiserror** — Error handling
-- **tracing** — Structured logging
+- **CLI** — clap command tree; `cb`/`ws` aliases; hidden `__sessiond` daemon entry
+- **Session daemon** — portable-pty + tokio unix sockets, framed protocol,
+  scrollback replay, setsid detachment
+- **Clipboard** — flock-guarded JSON queue in `~/.acta/`, OSC 52 fallback
+- **Workspace** — `acta.yaml` manifest, parallel git clone/pull via the
+  system git (inherits your SSH agent / credential helpers)
+- **TUI** — ratatui session picker with vim motions
 
 ## Roadmap
 
-### Phase 1: MVP (Current)
-- [x] Basic CLI structure
-- [x] Command parsing
-- [ ] Session state management
-- [ ] Git worktree operations
-- [ ] Basic TUI
+- [ ] `acta cb` daemon with UDS push from remote runners (clipboard over the network)
+- [ ] Security harness: `ACTA_ENV=prod` command blocking + audit log
+- [ ] Terminal-driver plugins (tmux, WezTerm, zellij panes as session frontends)
+- [ ] `acta browser` / `acta mac` — the Agent-to-OS layer
+- [ ] Session snapshot/restore
 
-### Phase 2: Core Features
-- [ ] Multi-pane layout
-- [ ] Session persistence
-- [ ] Plugin system
-- [ ] Advanced worktree management
+## Development
 
-### Phase 3: Integration
-- [ ] AgentFlow integration
-- [ ] Mac Runner support
-- [ ] Remote session support
-- [ ] Cloud agent orchestration
-
-## Contributing
-
-Acta is part of the [OmniAura](https://github.com/omniaura) ecosystem. Contributions welcome!
+```bash
+cargo build
+cargo test
+./target/debug/acta new bash --name demo -- -c 'while true; do date; sleep 1; done'
+./target/debug/acta attach demo   # Ctrl-\ to detach
+```
 
 ## License
 
-MIT License - see LICENSE file for details
-
-## Links
-
-- **Repository:** https://github.com/omniaura/acta
-- **OmniAura:** https://github.com/omniaura
-- **Spec:** [acta-spec.md](/workspace/group/acta-spec.md)
+MIT — see [LICENSE](./LICENSE).
 
 ---
 
-*"Acta" — Latin for "acts" or "things done"*
+> **Acta, non verba.** *Deeds, not words.*

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -32,7 +32,10 @@ impl Default for Config {
             PluginConfig {
                 command: "claude".to_string(),
                 args: vec![],
-                env: HashMap::from([("ANTHROPIC_API_KEY".to_string(), "${ANTHROPIC_API_KEY}".to_string())]),
+                env: HashMap::from([(
+                    "ANTHROPIC_API_KEY".to_string(),
+                    "${ANTHROPIC_API_KEY}".to_string(),
+                )]),
             },
         );
 
@@ -48,7 +51,34 @@ impl Default for Config {
         plugins.insert(
             "cursor".to_string(),
             PluginConfig {
-                command: "cursor".to_string(),
+                command: "cursor-agent".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+        );
+
+        plugins.insert(
+            "codex".to_string(),
+            PluginConfig {
+                command: "codex".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+        );
+
+        plugins.insert(
+            "gemini".to_string(),
+            PluginConfig {
+                command: "gemini".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+        );
+
+        plugins.insert(
+            "aider".to_string(),
+            PluginConfig {
+                command: "aider".to_string(),
                 args: vec![],
                 env: HashMap::new(),
             },
@@ -85,12 +115,10 @@ impl Config {
         let path = Self::get_config_path()?;
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .context("Failed to create config directory")?;
+            fs::create_dir_all(parent).context("Failed to create config directory")?;
         }
 
-        let contents = serde_yaml::to_string(self)
-            .context("Failed to serialize config")?;
+        let contents = serde_yaml::to_string(self).context("Failed to serialize config")?;
 
         fs::write(&path, contents)
             .with_context(|| format!("Failed to write config to {}", path.display()))?;
@@ -125,5 +153,36 @@ impl Config {
 
     pub fn remove_plugin(&mut self, name: &str) -> Option<PluginConfig> {
         self.plugins.remove(name)
+    }
+}
+
+/// Expand `${VAR}` references from the environment. Returns `None` when the
+/// value is a single unset variable reference, so plugin env entries like
+/// `ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"` don't override an inherited
+/// value with an empty string.
+pub fn expand_env_value(value: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = value;
+    let mut had_unset = false;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            out.push_str(&rest[start..]);
+            rest = "";
+            break;
+        };
+        let var = &after[..end];
+        match std::env::var(var) {
+            Ok(val) => out.push_str(&val),
+            Err(_) => had_unset = true,
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    if out.is_empty() && had_unset {
+        None
+    } else {
+        Some(out)
     }
 }

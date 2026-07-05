@@ -1,6 +1,6 @@
+use crate::config::Config;
 use anyhow::Result;
 use tracing::info;
-use crate::config::Config;
 
 pub async fn list() -> Result<()> {
     info!("Listing configuration");
